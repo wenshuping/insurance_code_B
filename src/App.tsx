@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   Search,
@@ -66,6 +66,7 @@ import {
   BriefcaseMedical,
   Car
 } from 'lucide-react';
+import { bApi, trackEvent, type BCustomer, type BOrder } from './lib/api';
 
 const CUSTOMERS = [
   {
@@ -203,7 +204,15 @@ const MALL_ACTIVITIES = [
   }
 ];
 
-function SwipeableCard({ customer, onOpenTags }: { customer: typeof CUSTOMERS[0], onOpenTags: () => void }) {
+function SwipeableCard({
+  customer,
+  onOpenTags,
+  onOpenDetail,
+}: {
+  customer: typeof CUSTOMERS[0];
+  onOpenTags: () => void;
+  onOpenDetail: () => void;
+}) {
   return (
     <div className="relative rounded-xl border border-slate-200 shadow-sm bg-slate-50 overflow-hidden">
       {/* Background Actions */}
@@ -224,6 +233,7 @@ function SwipeableCard({ customer, onOpenTags }: { customer: typeof CUSTOMERS[0]
         drag="x"
         dragConstraints={{ left: -110, right: 0 }}
         dragElastic={0.1}
+        onClick={onOpenDetail}
         className="relative bg-white p-4 flex items-start gap-3 z-10 rounded-xl cursor-grab active:cursor-grabbing border-r border-slate-100"
       >
         <div className="relative w-14 h-14 shrink-0 rounded-full bg-slate-200 overflow-hidden border-2 border-white">
@@ -433,7 +443,17 @@ function HomeView({ onOpenPolicyEntry, onOpenScanVerification }: { onOpenPolicyE
   );
 }
 
-function CustomersView({ onOpenProfile, onOpenTags }: { onOpenProfile: () => void, onOpenTags: () => void }) {
+function CustomersView({
+  onOpenDetail,
+  onOpenCreate,
+  onOpenTags,
+  customers,
+}: {
+  onOpenDetail: () => void;
+  onOpenCreate: () => void;
+  onOpenTags: () => void;
+  customers: typeof CUSTOMERS;
+}) {
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden">
       {/* Header */}
@@ -485,14 +505,14 @@ function CustomersView({ onOpenProfile, onOpenTags }: { onOpenProfile: () => voi
 
       {/* Customer List */}
       <main className="flex-1 overflow-y-auto p-4 space-y-3 pb-32">
-        {CUSTOMERS.map(customer => (
-          <SwipeableCard key={customer.id} customer={customer} onOpenTags={onOpenTags} />
+        {customers.map(customer => (
+          <SwipeableCard key={customer.id} customer={customer} onOpenTags={onOpenTags} onOpenDetail={onOpenDetail} />
         ))}
       </main>
 
       {/* Floating Action Button */}
       <button 
-        onClick={onOpenProfile}
+        onClick={onOpenCreate}
         className="absolute bottom-24 right-6 w-14 h-14 rounded-full bg-primary text-white shadow-xl flex items-center justify-center hover:scale-105 active:scale-95 transition-transform z-20"
       >
         <Plus className="w-8 h-8" />
@@ -1541,7 +1561,7 @@ function PolicyEntryView({ onBack }: { onBack: () => void }) {
         <button onClick={onBack} className="flex items-center justify-center w-10 h-10 rounded-full hover:bg-slate-100 transition-colors">
           <ArrowLeft className="w-6 h-6 text-slate-700" />
         </button>
-        <h1 className="text-xl font-bold tracking-tight text-slate-900">上传保单</h1>
+        <h1 className="text-xl font-bold tracking-tight text-slate-900">录入客户资料</h1>
         <button className="flex items-center justify-center w-10 h-10 rounded-full hover:bg-slate-100 transition-colors">
           <HelpOutline className="w-6 h-6 text-slate-700" />
         </button>
@@ -1916,17 +1936,67 @@ export default function App() {
   const [showTagEditor, setShowTagEditor] = useState(false);
   const [showPolicyEntry, setShowPolicyEntry] = useState(false);
   const [showScanVerification, setShowScanVerification] = useState(false);
+  const [customers, setCustomers] = useState<typeof CUSTOMERS>(CUSTOMERS);
+  const [orders, setOrders] = useState<BOrder[]>([]);
+  const [liveError, setLiveError] = useState('');
+  const track = (event: string, properties: Record<string, unknown> = {}) => {
+    trackEvent({ event, properties }).catch(() => undefined);
+  };
+
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    let disposed = false;
+    (async () => {
+      try {
+        const [customerRes, orderRes] = await Promise.all([bApi.customers(), bApi.orders()]);
+        if (disposed) return;
+        const mapped = customerRes.list.map((row: BCustomer, idx: number) => ({
+          id: row.id,
+          name: row.name,
+          avatar: CUSTOMERS[idx % CUSTOMERS.length]?.avatar || 'https://picsum.photos/seed/customer/150/150',
+          intent: Math.max(0, Math.min(3, (Number(row.id) % 4) || 1)),
+          tags: [{ text: `团队${row.teamId}`, color: 'text-primary bg-primary/10' }],
+          activity: `客户ID ${row.id} · 归属顾问 ${row.ownerUserId}`,
+        }));
+        setCustomers(mapped.length ? (mapped as typeof CUSTOMERS) : CUSTOMERS);
+        setOrders(orderRes.list || []);
+        setLiveError('');
+      } catch (err: any) {
+        if (disposed) return;
+        setLiveError(err?.message || '实时数据加载失败');
+      }
+    })();
+    return () => {
+      disposed = true;
+    };
+  }, [isLoggedIn]);
+
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    track('b_page_view', { tab: activeTab });
+  }, [activeTab, isLoggedIn]);
 
   if (!isLoggedIn) {
     return (
       <div className="max-w-md mx-auto bg-background-light min-h-screen relative shadow-2xl overflow-hidden flex flex-col">
-        <LoginView onLogin={() => setIsLoggedIn(true)} />
+        <LoginView
+          onLogin={() => {
+            setIsLoggedIn(true);
+            track('b_login_success', {});
+          }}
+        />
       </div>
     );
   }
 
   return (
     <div className="max-w-md mx-auto bg-background-light min-h-screen relative shadow-2xl overflow-hidden flex flex-col">
+      <div className="px-3 pt-2">
+        <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-600 flex items-center justify-between">
+          <span>实时数据: 客户 {customers.length} · 订单 {orders.length}</span>
+          <span className={liveError ? 'text-rose-500' : 'text-emerald-600'}>{liveError ? '连接异常' : '已连接 API'}</span>
+        </div>
+      </div>
       {showProfile ? (
         <CustomerProfileView onBack={() => setShowProfile(false)} />
       ) : showTagEditor ? (
@@ -1938,7 +2008,14 @@ export default function App() {
       ) : (
         <>
           {activeTab === 'home' && <HomeView onOpenPolicyEntry={() => setShowPolicyEntry(true)} onOpenScanVerification={() => setShowScanVerification(true)} />}
-          {activeTab === 'customers' && <CustomersView onOpenProfile={() => setShowProfile(true)} onOpenTags={() => setShowTagEditor(true)} />}
+          {activeTab === 'customers' && (
+            <CustomersView
+              customers={customers}
+              onOpenDetail={() => setShowProfile(true)}
+              onOpenCreate={() => setShowPolicyEntry(true)}
+              onOpenTags={() => setShowTagEditor(true)}
+            />
+          )}
           {activeTab === 'tools' && <ToolsView />}
           {activeTab === 'analytics' && <AnalyticsView />}
           {activeTab === 'profile' && <ProfileView />}
